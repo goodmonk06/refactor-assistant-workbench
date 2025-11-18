@@ -6,6 +6,8 @@ import { codebaseRoutes } from './routes/codebases';
 import { scanRoutes } from './routes/scans';
 import { planRoutes } from './routes/plans';
 import { taskRoutes } from './routes/tasks';
+import { templateRoutes } from './routes/templates';
+import { commentRoutes } from './routes/comments';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
 
@@ -39,6 +41,8 @@ async function start() {
   await fastify.register(scanRoutes);
   await fastify.register(planRoutes);
   await fastify.register(taskRoutes);
+  await fastify.register(templateRoutes);
+  await fastify.register(commentRoutes);
 
   // Error handler
   fastify.setErrorHandler((error, request, reply) => {

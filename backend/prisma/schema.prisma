@@ -9,60 +9,313 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================================================
+// CORE DOMAIN MODELS
+// ============================================================================
+
 model Codebase {
   id            String         @id @default(cuid())
   name          String
   repoPath      String?
   githubUrl     String?
   mainLanguage  String?
+  description   String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  // Relationships
   scanRuns      ScanRun[]
   refactorPlans RefactorPlan[]
+  metadata      CodebaseMetadata?
+  scanSchedules ScanSchedule[]
+  activityLogs  ActivityLog[]
 
   @@map("codebases")
 }
 
+model CodebaseMetadata {
+  id            String   @id @default(cuid())
+  codebaseId    String   @unique
+  codebase      Codebase @relation(fields: [codebaseId], references: [id], onDelete: Cascade)
+
+  // Organizational metadata
+  tags          String[]          // e.g., ["frontend", "critical", "legacy"]
+  team          String?           // Owning team name
+  costCenter    String?           // For enterprise tracking
+  slaLevel      String?           // "critical", "high", "medium", "low"
+
+  // Technical metadata
+  estimatedSize Int?              // Estimated LOC
+  techStack     String[]          // e.g., ["react", "typescript", "node"]
+
+  // Custom fields (JSON for flexibility)
+  customFields  Json?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("codebase_metadata")
+}
+
 model ScanRun {
+  id           String    @id @default(cuid())
+  codebaseId   String
+  codebase     Codebase  @relation(fields: [codebaseId], references: [id], onDelete: Cascade)
+
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  status       String    // "pending", "running", "completed", "failed", "cancelled"
+  summaryJson  Json?
+  errorMessage String?
+
+  // Scan configuration
+  scanType     String    @default("full") // "full", "incremental", "targeted"
+  scanConfig   Json?                      // Additional scan parameters
+
+  // Performance metrics
+  filesScanned Int?
+  duration     Int?      // milliseconds
+
+  // Relationships
+  triggeredBy  String?   // "manual", "schedule", "webhook", "cli"
+  scheduleId   String?
+  schedule     ScanSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  createdAt    DateTime  @default(now())
+  activityLogs ActivityLog[]
+
+  @@map("scan_runs")
+  @@index([codebaseId, status])
+  @@index([startedAt])
+}
+
+model ScanSchedule {
   id          String    @id @default(cuid())
   codebaseId  String
   codebase    Codebase  @relation(fields: [codebaseId], references: [id], onDelete: Cascade)
-  startedAt   DateTime  @default(now())
-  finishedAt  DateTime?
-  status      String    // "running", "completed", "failed"
-  summaryJson Json?
-  errorMessage String?
-  createdAt   DateTime  @default(now())
 
-  @@map("scan_runs")
+  name        String
+  description String?
+
+  // Schedule configuration
+  cronExpression String  // e.g., "0 0 * * *" for daily at midnight
+  timezone       String  @default("UTC")
+  enabled        Boolean @default(true)
+
+  // Scan options
+  scanType    String    @default("full")
+  scanConfig  Json?
+
+  // Execution tracking
+  lastRunAt   DateTime?
+  nextRunAt   DateTime?
+  runCount    Int       @default(0)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relationships
+  scanRuns    ScanRun[]
+
+  @@map("scan_schedules")
+  @@index([codebaseId, enabled])
+  @@index([nextRunAt])
 }
 
 model RefactorPlan {
   id                  String         @id @default(cuid())
   codebaseId          String
   codebase            Codebase       @relation(fields: [codebaseId], references: [id], onDelete: Cascade)
+
   title               String
   descriptionMarkdown String?
-  goal                String?        // The original goal/prompt used to generate this plan
+  goal                String?        // The original goal/prompt
+
+  // Plan metadata
+  status              String         @default("draft") // "draft", "active", "completed", "archived"
+  priority            Int            @default(0)       // Higher = more important
+
+  // Tracking
+  estimatedEffort     Int?           // Person-hours
+  actualEffort        Int?           // Tracked person-hours
+
+  // Template relationship
+  templateId          String?
+  template            PlanTemplate?  @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
+
+  // Relationships
   tasks               RefactorTask[]
+  activityLogs        ActivityLog[]
 
   @@map("refactor_plans")
+  @@index([codebaseId, status])
+  @@index([priority])
+}
+
+model PlanTemplate {
+  id                  String   @id @default(cuid())
+
+  name                String
+  description         String?
+  category            String?  // "architecture", "performance", "testing", "migration"
+
+  // Template content
+  titleTemplate       String
+  descriptionTemplate String?
+  goalTemplate        String?
+
+  // Task templates (JSON array of task templates)
+  taskTemplates       Json     // [{title, description, areaPath, priority, orderIndex}]
+
+  // Metadata
+  tags                String[]
+  usageCount          Int      @default(0)
+  isPublic            Boolean  @default(true)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Relationships
+  plans               RefactorPlan[]
+
+  @@map("plan_templates")
+  @@index([category])
+  @@index([isPublic])
 }
 
 model RefactorTask {
   id                  String       @id @default(cuid())
   planId              String
   plan                RefactorPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
   title               String
   descriptionMarkdown String?
   areaPath            String?      // e.g., "src/core/scheduler"
-  status              String       @default("todo") // "todo", "in_progress", "done"
+
+  status              String       @default("todo") // "todo", "in_progress", "done", "blocked"
   priority            Int          @default(0)      // Higher number = higher priority
   orderIndex          Int          @default(0)      // For ordering tasks
+
+  // Tracking
+  assignedTo          String?      // User/team identifier
+  estimatedHours      Int?
+  actualHours         Int?
+  blockedReason       String?
+
+  // Dates
+  startedAt           DateTime?
+  completedAt         DateTime?
+  dueDate             DateTime?
+
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
 
+  // Relationships
+  comments            TaskComment[]
+  activityLogs        ActivityLog[]
+
   @@map("refactor_tasks")
+  @@index([planId, status])
+  @@index([assignedTo])
+}
+
+model TaskComment {
+  id                  String       @id @default(cuid())
+  taskId              String
+  task                RefactorTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  content             String
+  authorName          String       // For now, just a name; will become User later
+  authorEmail         String?
+
+  // Threading
+  parentId            String?
+  parent              TaskComment? @relation("CommentThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies             TaskComment[] @relation("CommentThread")
+
+  // Metadata
+  mentions            String[]     // User identifiers mentioned
+  reactions           Json?        // {emoji: count} map
+
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  deletedAt           DateTime?
+
+  @@map("task_comments")
+  @@index([taskId, createdAt])
+  @@index([authorEmail])
+}
+
+// ============================================================================
+// SYSTEM MODELS
+// ============================================================================
+
+model ActivityLog {
+  id            String    @id @default(cuid())
+
+  // Event information
+  eventType     String    // "codebase.created", "scan.completed", "plan.generated", etc.
+  entityType    String    // "codebase", "scan", "plan", "task"
+  entityId      String
+
+  // Actor information
+  actorType     String    @default("system") // "user", "system", "api", "schedule"
+  actorId       String?
+  actorName     String?
+
+  // Change details
+  action        String    // "created", "updated", "deleted", "status_changed"
+  changes       Json?     // Before/after for updates
+  metadata      Json?     // Additional context
+
+  // Relationships (optional, for easier querying)
+  codebaseId    String?
+  codebase      Codebase? @relation(fields: [codebaseId], references: [id], onDelete: SetNull)
+  scanId        String?
+  scan          ScanRun?  @relation(fields: [scanId], references: [id], onDelete: SetNull)
+  planId        String?
+  plan          RefactorPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
+  taskId        String?
+  task          RefactorTask? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  timestamp     DateTime  @default(now())
+
+  @@map("activity_logs")
+  @@index([entityType, entityId])
+  @@index([eventType])
+  @@index([timestamp])
+  @@index([codebaseId])
+}
+
+model Integration {
+  id            String   @id @default(cuid())
+
+  name          String
+  type          String   // "webhook", "slack", "email", "github", "jira"
+  enabled       Boolean  @default(true)
+
+  // Configuration (varies by type)
+  config        Json     // e.g., {url, secret} for webhook, {token, channel} for Slack
+
+  // Event subscriptions
+  events        String[] // Which events to listen to
+
+  // Retry and error handling
+  retryCount    Int      @default(3)
+  timeout       Int      @default(30000) // milliseconds
+
+  // Status tracking
+  lastTriggeredAt DateTime?
+  lastSuccess     DateTime?
+  lastError       String?
+  failureCount    Int      @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("integrations")
+  @@index([type, enabled])
 }
