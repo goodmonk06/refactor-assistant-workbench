@@ -42,20 +42,77 @@ async function start() {
 
   // Error handler
   fastify.setErrorHandler((error, request, reply) => {
-    fastify.log.error(error);
+    fastify.log.error({
+      err: error,
+      url: request.url,
+      method: request.method,
+    });
 
+    // Zod validation errors
+    if (error.name === 'ZodError') {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Validation Error',
+        message: 'Invalid request data',
+        details: error.issues || error.message,
+      });
+    }
+
+    // Fastify validation errors
     if (error.validation) {
       return reply.status(400).send({
+        statusCode: 400,
         error: 'Validation Error',
         message: error.message,
         details: error.validation,
       });
     }
 
+    // Prisma errors
+    if (error.code && error.code.startsWith('P')) {
+      if (error.code === 'P2002') {
+        return reply.status(409).send({
+          statusCode: 409,
+          error: 'Conflict',
+          message: 'A record with this data already exists',
+        });
+      }
+      if (error.code === 'P2025') {
+        return reply.status(404).send({
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Record not found',
+        });
+      }
+      return reply.status(500).send({
+        statusCode: 500,
+        error: 'Database Error',
+        message: 'A database error occurred',
+      });
+    }
+
+    // Not found errors
+    if (error.statusCode === 404) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: error.message || 'Resource not found',
+      });
+    }
+
+    // Default error response
     const statusCode = error.statusCode || 500;
+    const isServerError = statusCode >= 500;
+
     reply.status(statusCode).send({
-      error: error.name || 'Internal Server Error',
-      message: error.message,
+      statusCode,
+      error: isServerError ? 'Internal Server Error' : error.name || 'Error',
+      message: isServerError
+        ? 'An unexpected error occurred'
+        : error.message || 'An error occurred',
+      ...(process.env.NODE_ENV === 'development' && isServerError
+        ? { stack: error.stack }
+        : {}),
     });
   });
 
